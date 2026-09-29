@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>游客参观页 · 多语展签</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap" id="app"></div>
+  <script src="/static/common.js"></script>
+  <script>
+    let languages = [];
+    let current = new URLSearchParams(location.search).get("lang");
+
+    async function init() {
+      await renderTopbar("/visitor");
+      languages = await api("GET", "/api/public/languages");
+      if (current && !languages.some((l) => l.code === current)) current = null;
+      render();
+    }
+
+    function render() {
+      if (!current) return renderIndex();
+
+      const lang = languages.find((l) => l.code === current);
+      document.getElementById("app").innerHTML = `
+        <p><a href="/visitor">← 全部语言</a></p>
+        <h1>${esc(lang.name_zh)} · ${esc(lang.name_en)}</h1>
+        <p class="subtitle">本页面始终展示该语言<strong>最新已发布的不可变快照</strong>。</p>
+        <div id="lang-body" class="card"><p class="muted">加载中…</p></div>`;
+      api("GET", `/api/public/languages/${encodeURIComponent(current)}`).then(renderLanguage);
+    }
+
+    function renderIndex() {
+      document.getElementById("app").innerHTML = `
+        <div class="hero">
+          <h1>展馆多语展签</h1>
+          <p class="subtitle">请选择您的语言 / Choose your language</p>
+          <div class="lang-list">
+            ${languages.map((l) => `
+              <a class="lang-card" href="/visitor?lang=${encodeURIComponent(l.code)}">
+                <div style="font-size:17px;font-weight:600">${esc(l.name_zh)}</div>
+                <div class="muted" style="font-size:14px">${esc(l.name_en)}</div>
+                <div class="ver">
+                  ${l.version
+                    ? `最新版本 v${l.version} · ${l.label_count} 条 · ${fmtTime(l.published_at)}`
+                    : "暂无内容"}
+                </div>
+              </a>`).join("")}
+          </div>
+        </div>`;
+    }
+
+    function renderLanguage(data) {
+      const body = document.getElementById("lang-body");
+      if (!data.snapshot) {
+        body.innerHTML = `
+          <div class="empty">
+            <p style="font-size:16px">该语言暂无内容</p>
+            <p>译文尚未经馆员发布快照，请稍后再来查看。</p>
+          </div>`;
+        return;
+      }
+      body.innerHTML = `
+        <p class="meta">
+          快照版本 <b>v${data.snapshot.version}</b> ·
+          共 ${data.snapshot.label_count} 条 ·
+          发布人 ${esc(data.snapshot.publisher_name)} ·
+          ${fmtTime(data.snapshot.published_at)}
+        </p>
+        ${data.items.map((it) => `
+          <div class="item state-confirmed" style="border-left-color:var(--accent)">
+            <div class="item-head"><code>${esc(it.label_code)}</code></div>
+            <div class="zh-text">${esc(it.source_text)}</div>
+            <div class="tr-text">${esc(it.trans_text)}</div>
+            <div class="meta">原文第 ${it.source_rev} 版 · 译文第 ${it.trans_rev} 版</div>
+          </div>`).join("")}`;
+    }
+
+    init();
+  </script>
+</body>
+</html>

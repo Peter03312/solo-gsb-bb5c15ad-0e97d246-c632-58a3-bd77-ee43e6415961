@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>馆员后台 · 多语展签</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap" id="app"><p class="muted">加载中…</p></div>
+  <script src="/static/common.js"></script>
+  <script>
+    let me = null;
+    let labels = [];
+    let languages = [];
+
+    async function init() {
+      me = await renderTopbar("/admin");
+      if (!me) {
+        document.getElementById("app").innerHTML =
+          `<div class="card empty"><p>请先登录。</p><a class="btn" href="/login">前往登录</a></div>`;
+        return;
+      }
+      if (me.role !== "curator") {
+        document.getElementById("app").innerHTML =
+          `<div class="card empty"><p>本页面仅限馆员账号访问。</p>
+           <a class="btn" href="/workspace">前往工作台</a></div>`;
+        return;
+      }
+      await refresh();
+    }
+
+    async function refresh() {
+      [labels, languages] = await Promise.all([
+        api("GET", "/api/labels"),
+        api("GET", "/api/languages"),
+      ]);
+      render();
+    }
+
+    function render() {
+      document.getElementById("app").innerHTML = `
+        <h1>馆员后台</h1>
+        <p class="subtitle">维护中文展签原文与目标语言。注意：修改原文会产生新修订号，
+          即使字句改回原样，所有语言的旧译文确认都会失效，须重新审校与发布。</p>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <h2>新增展签</h2>
+            <form id="label-form">
+              <div style="margin-bottom:12px">
+                <label>展签编号（唯一）</label>
+                <input name="code" required placeholder="如 A005" />
+              </div>
+              <div style="margin-bottom:12px">
+                <label>中文原文</label>
+                <textarea name="source_text" required></textarea>
+              </div>
+              <div style="margin-bottom:12px">
+                <label>备注（可选）</label>
+                <input name="note" />
+              </div>
+              <button type="submit">创建（第 1 版）</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h2>新增目标语言</h2>
+            <form id="lang-form">
+              <div style="margin-bottom:12px">
+                <label>语言代码</label>
+                <input name="code" required placeholder="如 fr / de / ko" />
+              </div>
+              <div class="grid grid-2">
+                <div style="margin-bottom:12px">
+                  <label>中文名</label>
+                  <input name="name_zh" required placeholder="法语" />
+                </div>
+                <div style="margin-bottom:12px">
+                  <label>英文名</label>
+                  <input name="name_en" required placeholder="French" />
+                </div>
+              </div>
+              <button type="submit">添加语言</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>目标语言与发布情况</h2>
+          <table>
+            <thead><tr><th>代码</th><th>语言</th><th>最新已发布快照</th><th>工作台</th></tr></thead>
+            <tbody>
+              ${languages.map((l) => `
+                <tr>
+                  <td><code>${esc(l.code)}</code></td>
+                  <td>${esc(l.name_zh)} · ${esc(l.name_en)}</td>
+                  <td>${l.latest_version
+                        ? `v${l.latest_version} · ${fmtTime(l.latest_published_at)}`
+                        : `<span class="badge badge-missing">从未发布</span>`}</td>
+                  <td><a class="btn small secondary" href="/workspace?lang=${encodeURIComponent(l.code)}">打开</a></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>展签原文（${labels.length}）</h2>
+          <table>
+            <thead><tr><th style="width:90px">编号</th><th>原文 / 各语言状态</th><th style="width:150px">操作</th></tr></thead>
+            <tbody>
+              ${labels.map(labelRow).join("")}
+            </tbody>
+          </table>
+        </div>`;
+
+      document.getElementById("label-form").addEventListener("submit", createLabel);
+      document.getElementById("lang-form").addEventListener("submit", createLanguage);
+      document.querySelectorAll(".edit-btn").forEach((b) =>
+        b.addEventListener("click", () => editLabel(Number(b.dataset.id)))
+      );
+    }
+
+    function labelRow(l) {
+      return `
+        <tr>
+          <td><code>${esc(l.code)}</code><br/>
+              <span class="badge badge-rev">r${l.current_rev}</span></td>
+          <td>
+            <div class="zh-text" style="margin:0 0 8px">${esc(l.source_text)}</div>
+            <div>${(l.languages || []).map((s) =>
+              `<span class="badge badge-${s.state}" style="margin:2px">${esc(s.code)} · ${STATE_LABEL[s.state]}</span>`
+            ).join(" ")}</div>
+          </td>
+          <td class="row-actions">
+            <button class="small secondary edit-btn" data-id="${l.id}">修改原文</button>
+          </td>
+        </tr>
+        <tr class="edit-row" id="edit-row-${l.id}" style="display:none">
+          <td colspan="3">
+            <label>新原文（保存后成为第 ${l.current_rev + 1} 版，所有译文确认失效）</label>
+            <textarea class="edit-text">${esc(l.source_text)}</textarea>
+            <div class="actions">
+              <button class="small save-btn">保存为新版本</button>
+              <button class="small secondary cancel-btn">取消</button>
+              <span class="meta">将携带读取时修订号 r${l.current_rev}；若期间他人已修改，请求会被拒绝。</span>
+            </div>
+          </td>
+        </tr>`;
+    }
+
+    function editLabel(id) {
+      const row = document.getElementById(`edit-row-${id}`);
+      row.style.display = row.style.display === "none" ? "table-row" : "none";
+      row.querySelector(".cancel-btn").onclick = () => (row.style.display = "none");
+      row.querySelector(".save-btn").onclick = async () => {
+        const l = labels.find((x) => x.id === id);
+        try {
+          await api("POST", `/api/labels/${id}/revisions`, {
+            source_text: row.querySelector(".edit-text").value,
+            base_rev: l.current_rev,
+            note: "",
+          });
+          toast("原文已更新，全部相关译文确认已失效", "ok");
+          await refresh();
+        } catch (err) {
+          toast(err.message, "error");
+          if (err.status === 409) await refresh();
+        }
+      };
+    }
+
+    async function createLabel(e) {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        await api("POST", "/api/labels", {
+          code: f.code.value,
+          source_text: f.source_text.value,
+          note: f.note.value,
+        });
+        toast("展签已创建", "ok");
+        await refresh();
+      } catch (err) { toast(err.message, "error"); }
+    }
+
+    async function createLanguage(e) {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        await api("POST", "/api/languages", {
+          code: f.code.value,
+          name_zh: f.name_zh.value,
+          name_en: f.name_en.value,
+        });
+        toast("语言已添加", "ok");
+        await refresh();
+      } catch (err) { toast(err.message, "error"); }
+    }
+
+    init();
+  </script>
+</body>
+</html>

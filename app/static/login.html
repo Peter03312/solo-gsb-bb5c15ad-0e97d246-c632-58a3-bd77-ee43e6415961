@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登录 · 多语展签审校</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card login-box">
+      <h1>账号登录</h1>
+      <p class="subtitle">译者、校对者与馆员请使用本地账号登录。</p>
+      <form id="login-form">
+        <div style="margin-bottom:14px">
+          <label for="username">用户名</label>
+          <input id="username" name="username" required autocomplete="username" />
+        </div>
+        <div style="margin-bottom:18px">
+          <label for="password">密码</label>
+          <input id="password" name="password" type="password" required
+                 autocomplete="current-password" />
+        </div>
+        <button type="submit" style="width:100%">登录</button>
+      </form>
+      <div class="hint">
+        演示账号：curator / curator123（馆员），translator / trans123（译者），
+        reviewer / review123（校对者）。
+      </div>
+    </div>
+  </div>
+  <script src="/static/common.js"></script>
+  <script>
+    document.getElementById("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        const user = await api("POST", "/api/auth/login", {
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value,
+        });
+        toast("登录成功，欢迎 " + user.display_name, "ok");
+        setTimeout(() => {
+          location.href = user.role === "curator" ? "/admin" : "/workspace";
+        }, 400);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+  </script>
+</body>
+</html>

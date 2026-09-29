@@ -1,0 +1,23 @@
+services:
+  web:
+    build: .
+    image: museum-labels:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # 生产部署请务必改成随机长字符串
+      SESSION_SECRET: "change-this-secret-in-production"
+      DB_PATH: "/data/museum.db"
+      # 1=首启写入演示展签与语言；设为 0 则只创建三个账号
+      SEED_DEMO: "1"
+    volumes:
+      - museum-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  museum-data:

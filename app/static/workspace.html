@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>译审工作台 · 多语展签</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="wrap" id="app"><p class="muted">加载中…</p></div>
+  <script src="/static/common.js"></script>
+  <script>
+    let me = null;
+    let languages = [];
+    let currentCode = null;
+    let data = null;
+
+    const canSubmit = () => me && me.role === "translator";
+    const canConfirm = () => me && me.role === "reviewer";
+    const canPublish = () => me && me.role === "curator";
+
+    async function init() {
+      me = await renderTopbar("/workspace");
+      if (!me) {
+        document.getElementById("app").innerHTML =
+          `<div class="card empty"><p>请先登录后使用译审工作台。</p>
+           <a class="btn" href="/login">前往登录</a></div>`;
+        return;
+      }
+      languages = await api("GET", "/api/languages");
+      const q = new URLSearchParams(location.search).get("lang");
+      currentCode = (languages.find((l) => l.code === q) || languages[0] || {}).code;
+      if (currentCode) await loadWorkspace();
+      else document.getElementById("app").innerHTML =
+        `<div class="card empty">尚未配置任何目标语言，请联系馆员在后台添加。</div>`;
+    }
+
+    async function loadWorkspace() {
+      data = await api("GET", `/api/workspace/${encodeURIComponent(currentCode)}`);
+      render();
+    }
+
+    function render() {
+      const c = data.counts;
+      document.getElementById("app").innerHTML = `
+        <h1>译审工作台</h1>
+        <p class="subtitle">按目标语言管理展签译文：待译 → 待另一名校对者确认 → 发布不可变快照。</p>
+        <div class="tabs">
+          ${languages.map((l) => `
+            <button class="tab ${l.code === currentCode ? "active" : ""}"
+                    data-code="${esc(l.code)}">
+              ${esc(l.name_zh)}（${esc(l.name_en)}）
+            </button>`).join("")}
+        </div>
+
+        <div class="card publish-panel">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+            <h2 style="margin:0">发布状态</h2>
+            <div>
+              <span class="badge badge-missing">待译 ${c.missing}</span>
+              <span class="badge badge-pending">待审 ${c.pending}</span>
+              <span class="badge badge-stale">过期 ${c.stale}</span>
+              <span class="badge badge-confirmed">已确认 ${c.confirmed}</span>
+            </div>
+          </div>
+          <p class="meta" style="margin:10px 0 0">
+            共 ${data.total} 条展签。
+            已发布快照：${
+              data.latest_snapshot
+                ? `v${data.latest_snapshot.version}（${data.latest_snapshot.label_count} 条，${fmtTime(data.latest_snapshot.published_at)}）`
+                : "无"
+            }
+            。每次发布均为不可变快照；游客页只展示最新已发布版本。
+          </p>
+          <div id="publish-body" style="margin-top:12px"></div>
+        </div>
+
+        <div id="sections"></div>`;
+
+      document.querySelectorAll(".tab").forEach((t) =>
+        t.addEventListener("click", () => {
+          currentCode = t.dataset.code;
+          history.replaceState(null, "", `?lang=${encodeURIComponent(currentCode)}`);
+          loadWorkspace();
+        })
+      );
+
+      renderPublishBody();
+      renderSections();
+    }
+
+    function renderPublishBody() {
+      const el = document.getElementById("publish-body");
+      if (data.publishable) {
+        el.innerHTML = `
+          <div class="ok-note">
+            全部 ${data.total} 条展签的译文均对应当前原文修订并已确认，可以发布。
+          </div>
+          <div class="actions">
+            <button id="publish-btn" ${canPublish() ? "" : "disabled"}>
+              ${canPublish() ? `发布新快照（v${(data.latest_snapshot?.version || 0) + 1}）`
+                             : "仅馆员可发布快照"}
+            </button>
+          </div>`;
+        const b = document.getElementById("publish-btn");
+        if (b) b.addEventListener("click", publish);
+      } else {
+        el.innerHTML = `
+          <div class="reason" style="background:var(--warn-bg);color:var(--warn)">
+            当前不可发布：必须该语言<strong>全部</strong>展签的译文对应当前原文修订且已确认。
+          </div>
+          <ul class="blocker-list">
+            ${data.blockers.map((b) => `
+              <li><b>${esc(b.label_code)}</b> · ${stateBadge(b.state)} — ${esc(b.reason)}</li>
+            `).join("")}
+          </ul>
+          ${canPublish() ? "" : `<p class="meta">（发布操作仅馆员账号可执行）</p>`}`;
+      }
+    }
+
+    function renderSections() {
+      const groups = [
+        ["stale", "过期译文（原文已更新）"],
+        ["pending", "待审（等待另一名校对者确认）"],
+        ["missing", "待译"],
+        ["confirmed", "已确认"],
+      ];
+      const host = document.getElementById("sections");
+      host.innerHTML = groups.map(([state, title]) => {
+        const items = data.items.filter((i) => i.state === state);
+        if (!items.length) return "";
+        return `<h2 style="margin:22px 0 10px">${title}（${items.length}）</h2>
+                ${items.map(itemHtml).join("")}`;
+      }).join("") || `<div class="card empty">暂无展签。</div>`;
+
+      bindItemEvents();
+    }
+
+    function historyBlock(item) {
+      return `
+        <details class="history-toggle" style="display:inline-block">
+          <summary>查看修订记录（原文 ${item.source_history.length} 版 / 译文 ${item.translation_history.length} 版）</summary>
+          <div class="history">
+            <p class="meta" style="margin:4px 0">原文修订：</p>
+            ${item.source_history.map((h) => `
+              <details><summary>第 ${h.rev} 版 · ${esc(h.author_name)} · ${fmtTime(h.created_at)}</summary>
+              <div class="zh-text">${esc(h.source_text)}</div></details>`).join("")}
+            <p class="meta" style="margin:8px 0 4px">译文修订：</p>
+            ${item.translation_history.length
+              ? item.translation_history.map((h) => `
+                <details><summary>第 ${h.rev} 版（对应原文第 ${h.source_rev} 版）· ${esc(h.translator_name)} · ${fmtTime(h.created_at)}</summary>
+                <div class="tr-text">${esc(h.text)}</div></details>`).join("")
+              : `<p class="meta">尚无译文修订。</p>`}
+          </div>
+        </details>`;
+    }
+
+    function itemHtml(item) {
+      const t = item.translation;
+      const isOwn = t && t.translator_id === me.id;
+      return `
+      <div class="item state-${item.state}" data-label="${item.label_id}">
+        <div class="item-head">
+          <code>${esc(item.label_code)}</code>
+          ${stateBadge(item.state)}
+          <span class="badge badge-rev">原文 r${item.source_current_rev}</span>
+          ${t ? `<span class="badge badge-rev">译文 r${t.current_rev}（基于原文 r${t.source_rev}）</span>` : ""}
+        </div>
+        <div class="zh-text">${esc(item.source_text)}</div>
+        ${t ? `<div class="tr-text">${esc(t.text)}</div>
+               <p class="meta">
+                 译者：${esc(t.translator_name || "—")} ·
+                 ${t.confirmed
+                    ? `已由 ${esc(t.reviewer_name || "—")} 于 ${fmtTime(t.confirmed_at)} 确认`
+                    : "尚未确认"}
+               </p>`
+            : `<p class="meta">尚无译文。</p>`}
+        ${item.block_reason && item.state !== "confirmed"
+          ? `<div class="reason">${esc(item.block_reason)}</div>` : ""}
+        <div class="actions" data-actions></div>
+        ${historyBlock(item)}
+      </div>`;
+    }
+
+    function bindItemEvents() {
+      data.items.forEach((item) => {
+        const root = document.querySelector(`.item[data-label="${item.label_id}"]`);
+        const box = root.querySelector("[data-actions]");
+        const t = item.translation;
+
+        if (canSubmit()) {
+          const btn = document.createElement("button");
+          btn.className = "small";
+          btn.textContent = t ? "修改 / 重新提交译文" : "提交译文";
+          btn.addEventListener("click", () => openEditor(item));
+          box.appendChild(btn);
+        }
+
+        if (canConfirm() && t && item.state === "pending") {
+          const btn = document.createElement("button");
+          btn.className = "small";
+          if (isOwn) {
+            btn.disabled = true;
+            btn.textContent = "不可确认自己的译文";
+            btn.title = "同一账号不得审自己的译文";
+          } else {
+            btn.textContent = "确认该译文";
+            btn.addEventListener("click", () => confirmItem(item));
+          }
+          box.appendChild(btn);
+        }
+      });
+    }
+
+    function openEditor(item) {
+      const root = document.querySelector(`.item[data-label="${item.label_id}"]`);
+      const existing = root.querySelector(".editor");
+      if (existing) { existing.remove(); return; }
+      const t = item.translation;
+      const editor = document.createElement("div");
+      editor.className = "editor";
+      editor.style.marginTop = "12px";
+      editor.innerHTML = `
+        <label>译文（提交即视为新修订，旧确认一律失效）</label>
+        <textarea class="editor-text">${esc(t ? t.text : "")}</textarea>
+        <div class="actions">
+          <button class="small editor-save">提交</button>
+          <button class="small secondary editor-cancel">取消</button>
+        </div>`;
+      root.appendChild(editor);
+      editor.querySelector(".editor-cancel").addEventListener("click", () => editor.remove());
+      editor.querySelector(".editor-save").addEventListener("click", async () => {
+        const text = editor.querySelector(".editor-text").value;
+        if (!text.trim()) return toast("译文不能为空", "error");
+        try {
+          await api("POST", `/api/workspace/${encodeURIComponent(currentCode)}/translations`, {
+            label_id: item.label_id,
+            text,
+            base_rev: t ? t.current_rev : 0,
+            base_source_rev: item.source_current_rev,
+          });
+          toast("译文已提交，等待校对者确认", "ok");
+          await loadWorkspace();
+        } catch (err) {
+          toast(err.message, "error");
+          if (err.status === 409) await loadWorkspace();
+        }
+      });
+      editor.querySelector(".editor-text").focus();
+    }
+
+    async function confirmItem(item) {
+      const t = item.translation;
+      try {
+        await api(
+          "POST",
+          `/api/workspace/${encodeURIComponent(currentCode)}/translations/${item.label_id}/confirm`,
+          { base_rev: t.current_rev }
+        );
+        toast("已确认该译文修订", "ok");
+        await loadWorkspace();
+      } catch (err) {
+        toast(err.message, "error");
+        if (err.status === 409) await loadWorkspace();
+      }
+    }
+
+    async function publish() {
+      if (!confirm("发布后将冻结当前全部已确认译文，生成不可变语言快照。确定发布？")) return;
+      try {
+        const r = await api("POST", `/api/workspace/${encodeURIComponent(currentCode)}/publish`);
+        toast(`快照 v${r.version} 已发布`, "ok");
+        await loadWorkspace();
+      } catch (err) {
+        toast(err.message, "error");
+        if (err.status === 409) await loadWorkspace();
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
